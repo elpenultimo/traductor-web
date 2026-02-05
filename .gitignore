@@ -7,3 +7,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .DS_Store
+
+# Next / local
+next-env.d.ts
+package-lock.json
