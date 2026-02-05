@@ -34,7 +34,14 @@ function translateText(text: string, lang: string): string {
 
 function rewriteNavigationLink(href: string, originUrl: URL, lang: string): string {
   const trimmed = href.trim();
-  if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('mailto:') || trimmed.startsWith('tel:')) {
+  const normalized = trimmed.toLowerCase();
+  if (
+    !trimmed ||
+    trimmed.startsWith('#') ||
+    normalized.startsWith('mailto:') ||
+    normalized.startsWith('tel:') ||
+    normalized.startsWith('javascript:')
+  ) {
     return href;
   }
 
@@ -139,9 +146,14 @@ function rewriteAssetUrl(
   $: ReturnType<typeof load>,
   selector: string,
   attr: string,
-  baseUrl: URL
+  baseUrl: URL,
+  shouldRewrite?: (node: AnyNode) => boolean
 ): void {
   $(selector).each((_, node) => {
+    if (shouldRewrite && !shouldRewrite(node)) {
+      return;
+    }
+
     const current = ($(node).attr(attr) ?? '').trim();
     if (!current) {
       return;
@@ -209,12 +221,13 @@ export async function GET(request: Request) {
   // Route asset fetches through /api/proxy.
   rewriteAssetUrl($, 'img[src]', 'src', parsedUrl);
   rewriteAssetUrl($, 'script[src]', 'src', parsedUrl);
-  rewriteAssetUrl($, 'link[href]', 'href', parsedUrl);
+  rewriteAssetUrl($, 'link[href]', 'href', parsedUrl, (node) => {
+    const rel = ($(node).attr('rel') ?? '').toLowerCase();
+    return ['stylesheet', 'icon', 'preload'].some((value) => rel.includes(value));
+  });
   rewriteAssetUrl($, 'source[src]', 'src', parsedUrl);
   rewriteAssetUrl($, 'video[poster]', 'poster', parsedUrl);
   rewriteAssetUrl($, 'audio[src]', 'src', parsedUrl);
-  rewriteAssetUrl($, 'iframe[src]', 'src', parsedUrl);
-  rewriteAssetUrl($, 'form[action]', 'action', parsedUrl);
 
   $('img[srcset], source[srcset]').each((_, node) => {
     const value = $(node).attr('srcset');

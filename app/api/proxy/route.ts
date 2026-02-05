@@ -8,6 +8,8 @@ const PRIVATE_IPV4_RANGES = [
 ];
 const PRIVATE_HOSTS = new Set(['localhost', '::1', '[::1]']);
 const PRIVATE_IPV6_PATTERNS = [/^fc/i, /^fd/i, /^fe[89ab]/i];
+const ALLOWED_HOST_PATTERNS = [/\.wikipedia\.org$/i, /\.wikimedia\.org$/i, /\.bbc\.com$/i];
+const ALLOWED_HOSTS = new Set(['example.com']);
 
 function isBlockedHost(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
@@ -21,6 +23,15 @@ function isBlockedHost(hostname: string): boolean {
 
   const compact = normalized.replace(/[[\]]/g, '').replace(/:/g, '');
   return PRIVATE_IPV6_PATTERNS.some((pattern) => pattern.test(compact));
+}
+
+function isAllowedHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  if (ALLOWED_HOSTS.has(normalized)) {
+    return true;
+  }
+
+  return ALLOWED_HOST_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function rewriteCssUrls(css: string, cssUrl: URL): string {
@@ -78,6 +89,10 @@ export async function GET(request: Request): Promise<Response> {
 
   if (isBlockedHost(parsed.hostname)) {
     return new Response('Host bloqueado por seguridad.', { status: 403 });
+  }
+
+  if (!isAllowedHost(parsed.hostname)) {
+    return new Response('Host no permitido. /api/proxy solo permite hosts en allowlist.', { status: 403 });
   }
 
   let upstream: Response;
