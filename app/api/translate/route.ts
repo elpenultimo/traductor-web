@@ -1,4 +1,5 @@
 import { load } from 'cheerio';
+import type { AnyNode } from 'domhandler';
 
 const ALLOWED_LANGS = new Set(['es', 'pt', 'fr']);
 const PRIVATE_IPV4_RANGES = [
@@ -33,17 +34,102 @@ function translateText(text: string, lang: string): string {
   return `${prefix}${text}`;
 }
 
-function rewriteLink(href: string, originUrl: URL, lang: string): string {
-  if (href.startsWith('#')) {
+function isRelativeUrl(value: string): boolean {
+  if (value.startsWith('//')) {
+    return true;
+  }
+
+  return !/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(value);
+}
+
+function absolutizeUrl(value: string, originUrl: URL): string {
+  const trimmed = value.trim();
+  if (!trimmed || !isRelativeUrl(trimmed)) {
+    return value;
+  }
+
+  return new URL(trimmed, originUrl).toString();
+}
+
+function absolutizeSrcset(value: string, originUrl: URL): string {
+  return value
+    .split(',')
+    .map((candidate) => {
+      const part = candidate.trim();
+      if (!part) {
+        return part;
+      }
+
+      const [urlPart, ...descriptorParts] = part.split(/\s+/);
+      const absoluteUrl = isRelativeUrl(urlPart) ? new URL(urlPart, originUrl).toString() : urlPart;
+      return [absoluteUrl, ...descriptorParts].join(' ').trim();
+    })
+    .join(', ');
+}
+
+function rewriteNavigationLink(href: string, originUrl: URL, lang: string): string {
+  const trimmed = href.trim();
+  if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('mailto:') || trimmed.startsWith('tel:')) {
     return href;
   }
 
-  const absolute = new URL(href, originUrl);
+  let absolute: URL;
+  if (isRelativeUrl(trimmed)) {
+    absolute = new URL(trimmed, originUrl);
+  } else {
+    absolute = new URL(trimmed);
+  }
+
   if (!['http:', 'https:'].includes(absolute.protocol)) {
     return href;
   }
 
   return `/${lang}?url=${encodeURIComponent(absolute.toString())}`;
+}
+
+function ensureBaseTag($: ReturnType<typeof load>, originUrl: URL): void {
+  if ($('head').length === 0) {
+    if ($('html').length > 0) {
+      $('html').prepend('<head></head>');
+    } else {
+      $.root().prepend('<html><head></head><body></body></html>');
+    }
+  }
+
+  const baseHref = originUrl.toString();
+  const head = $('head').first();
+  const base = head.find('base').first();
+
+  if (base.length > 0) {
+    base.attr('href', baseHref);
+  } else {
+    head.prepend(`<base href="${baseHref}">`);
+  }
+}
+
+function translateBodyTextNodes($: ReturnType<typeof load>, lang: string): void {
+  const blockedTags = new Set(['script', 'style', 'noscript']);
+
+  const walk = (node: AnyNode, blocked: boolean): void => {
+    const isTag = node.type === 'tag';
+    const nextBlocked = blocked || (isTag && blockedTags.has((node as any).name));
+
+    if (node.type === 'text' && !nextBlocked) {
+      const content = node.data;
+      if (content.trim().length > 0) {
+        node.data = translateText(content, lang);
+      }
+    }
+
+    const children = (node as any).children as AnyNode[] | undefined;
+    if (!children) {
+      return;
+    }
+
+    children.forEach((child) => walk(child, nextBlocked));
+  };
+
+  $('body').each((_, body) => walk(body, false));
 }
 
 async function fetchHtmlWithLimits(url: URL): Promise<string> {
@@ -123,11 +209,40 @@ export async function GET(request: Request) {
 
   const $ = load(sourceHtml);
 
-  $('p, h1, h2, h3, h4, h5, h6, li, span, a').each((_, node) => {
-    const text = $(node).text().trim();
-    if (text.length > 0) {
-      $(node).text(translateText(text, lang));
+  ensureBaseTag($, parsedUrl);
+
+  $('img').each((_, node) => {
+    const src = ($(node).attr('src') ?? '').trim();
+    const dataSrc = ($(node).attr('data-src') ?? '').trim();
+    if (dataSrc && (!src || src === 'about:blank')) {
+      $(node).attr('src', dataSrc);
+      $(node).removeAttr('data-src');
     }
+
+    const srcset = ($(node).attr('srcset') ?? '').trim();
+    const dataSrcset = ($(node).attr('data-srcset') ?? '').trim();
+    if (dataSrcset && !srcset) {
+      $(node).attr('srcset', dataSrcset);
+    }
+  });
+
+  $('img[src], link[href], script[src]').each((_, node) => {
+    const attr = node.tagName === 'link' ? 'href' : 'src';
+    const value = $(node).attr(attr);
+    if (!value) {
+      return;
+    }
+
+    $(node).attr(attr, absolutizeUrl(value, parsedUrl));
+  });
+
+  $('img[srcset], source[srcset]').each((_, node) => {
+    const value = $(node).attr('srcset');
+    if (!value) {
+      return;
+    }
+
+    $(node).attr('srcset', absolutizeSrcset(value, parsedUrl));
   });
 
   $('a[href]').each((_, node) => {
@@ -135,8 +250,10 @@ export async function GET(request: Request) {
     if (!href) {
       return;
     }
-    $(node).attr('href', rewriteLink(href, parsedUrl, lang));
+    $(node).attr('href', rewriteNavigationLink(href, parsedUrl, lang));
   });
+
+  translateBodyTextNodes($, lang);
 
   return new Response($.html(), {
     status: 200,
