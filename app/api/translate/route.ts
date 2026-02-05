@@ -1,5 +1,6 @@
 import { load } from 'cheerio';
 import type { AnyNode } from 'domhandler';
+import { rewriteSrcset, toAbsoluteUrl, toNavUrl, toProxyUrl } from '../../../lib/url';
 
 const ALLOWED_LANGS = new Set(['es', 'pt', 'fr']);
 const PRIVATE_IPV4_RANGES = [
@@ -27,44 +28,8 @@ function isPrivateHost(hostname: string): boolean {
 }
 
 function translateText(text: string, lang: string): string {
-  const prefix =
-    lang === 'es' ? '[ES] ' :
-    lang === 'pt' ? '[PT] ' :
-    '[FR] ';
+  const prefix = lang === 'es' ? '[ES] ' : lang === 'pt' ? '[PT] ' : '[FR] ';
   return `${prefix}${text}`;
-}
-
-function isRelativeUrl(value: string): boolean {
-  if (value.startsWith('//')) {
-    return true;
-  }
-
-  return !/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(value);
-}
-
-function absolutizeUrl(value: string, originUrl: URL): string {
-  const trimmed = value.trim();
-  if (!trimmed || !isRelativeUrl(trimmed)) {
-    return value;
-  }
-
-  return new URL(trimmed, originUrl).toString();
-}
-
-function absolutizeSrcset(value: string, originUrl: URL): string {
-  return value
-    .split(',')
-    .map((candidate) => {
-      const part = candidate.trim();
-      if (!part) {
-        return part;
-      }
-
-      const [urlPart, ...descriptorParts] = part.split(/\s+/);
-      const absoluteUrl = isRelativeUrl(urlPart) ? new URL(urlPart, originUrl).toString() : urlPart;
-      return [absoluteUrl, ...descriptorParts].join(' ').trim();
-    })
-    .join(', ');
 }
 
 function rewriteNavigationLink(href: string, originUrl: URL, lang: string): string {
@@ -73,18 +38,12 @@ function rewriteNavigationLink(href: string, originUrl: URL, lang: string): stri
     return href;
   }
 
-  let absolute: URL;
-  if (isRelativeUrl(trimmed)) {
-    absolute = new URL(trimmed, originUrl);
-  } else {
-    absolute = new URL(trimmed);
-  }
-
-  if (!['http:', 'https:'].includes(absolute.protocol)) {
+  const absolute = toAbsoluteUrl(originUrl, trimmed);
+  if (!absolute) {
     return href;
   }
 
-  return `/${lang}?url=${encodeURIComponent(absolute.toString())}`;
+  return toNavUrl(lang, absolute);
 }
 
 function ensureBaseTag($: ReturnType<typeof load>, originUrl: URL): void {
@@ -112,7 +71,7 @@ function translateBodyTextNodes($: ReturnType<typeof load>, lang: string): void 
 
   const walk = (node: AnyNode, blocked: boolean): void => {
     const isTag = node.type === 'tag';
-    const nextBlocked = blocked || (isTag && blockedTags.has((node as any).name));
+    const nextBlocked = blocked || (isTag && blockedTags.has((node as { name?: string }).name ?? ''));
 
     if (node.type === 'text' && !nextBlocked) {
       const content = node.data;
@@ -121,7 +80,7 @@ function translateBodyTextNodes($: ReturnType<typeof load>, lang: string): void 
       }
     }
 
-    const children = (node as any).children as AnyNode[] | undefined;
+    const children = (node as { children?: AnyNode[] }).children;
     if (!children) {
       return;
     }
@@ -176,6 +135,27 @@ async function fetchHtmlWithLimits(url: URL): Promise<string> {
   }
 }
 
+function rewriteAssetUrl(
+  $: ReturnType<typeof load>,
+  selector: string,
+  attr: string,
+  baseUrl: URL
+): void {
+  $(selector).each((_, node) => {
+    const current = ($(node).attr(attr) ?? '').trim();
+    if (!current) {
+      return;
+    }
+
+    const absolute = toAbsoluteUrl(baseUrl, current);
+    if (!absolute) {
+      return;
+    }
+
+    $(node).attr(attr, toProxyUrl(absolute));
+  });
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const rawUrl = searchParams.get('url');
@@ -226,15 +206,15 @@ export async function GET(request: Request) {
     }
   });
 
-  $('img[src], link[href], script[src]').each((_, node) => {
-    const attr = node.tagName === 'link' ? 'href' : 'src';
-    const value = $(node).attr(attr);
-    if (!value) {
-      return;
-    }
-
-    $(node).attr(attr, absolutizeUrl(value, parsedUrl));
-  });
+  // Route asset fetches through /api/proxy.
+  rewriteAssetUrl($, 'img[src]', 'src', parsedUrl);
+  rewriteAssetUrl($, 'script[src]', 'src', parsedUrl);
+  rewriteAssetUrl($, 'link[href]', 'href', parsedUrl);
+  rewriteAssetUrl($, 'source[src]', 'src', parsedUrl);
+  rewriteAssetUrl($, 'video[poster]', 'poster', parsedUrl);
+  rewriteAssetUrl($, 'audio[src]', 'src', parsedUrl);
+  rewriteAssetUrl($, 'iframe[src]', 'src', parsedUrl);
+  rewriteAssetUrl($, 'form[action]', 'action', parsedUrl);
 
   $('img[srcset], source[srcset]').each((_, node) => {
     const value = $(node).attr('srcset');
@@ -242,7 +222,7 @@ export async function GET(request: Request) {
       return;
     }
 
-    $(node).attr('srcset', absolutizeSrcset(value, parsedUrl));
+    $(node).attr('srcset', rewriteSrcset(parsedUrl, value));
   });
 
   $('a[href]').each((_, node) => {
