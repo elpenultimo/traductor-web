@@ -53,7 +53,7 @@ function rewriteNavigationLink(href: string, originUrl: URL, lang: string): stri
   return toNavUrl(lang, absolute);
 }
 
-function ensureBaseTag($: ReturnType<typeof load>, originUrl: URL): void {
+function ensureBaseTag($: ReturnType<typeof load>, appUrl: URL): void {
   if ($('head').length === 0) {
     if ($('html').length > 0) {
       $('html').prepend('<head></head>');
@@ -62,7 +62,7 @@ function ensureBaseTag($: ReturnType<typeof load>, originUrl: URL): void {
     }
   }
 
-  const baseHref = originUrl.toString();
+  const baseHref = `${appUrl.origin}/`;
   const head = $('head').first();
   const base = head.find('base').first();
 
@@ -201,7 +201,7 @@ export async function GET(request: Request) {
 
   const $ = load(sourceHtml);
 
-  ensureBaseTag($, parsedUrl);
+  ensureBaseTag($, new URL(request.url));
 
   $('img').each((_, node) => {
     const src = ($(node).attr('src') ?? '').trim();
