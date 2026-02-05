@@ -8,8 +8,18 @@ export function toAbsoluteUrl(base: URL | string, value: string): string | null 
     return null;
   }
 
-  if (trimmed.startsWith('#') || trimmed.startsWith('mailto:') || trimmed.startsWith('tel:')) {
+  const normalized = trimmed.toLowerCase();
+  if (
+    trimmed.startsWith('#') ||
+    normalized.startsWith('mailto:') ||
+    normalized.startsWith('tel:') ||
+    normalized.startsWith('javascript:')
+  ) {
     return null;
+  }
+
+  if (trimmed.startsWith('//')) {
+    return `https:${trimmed}`;
   }
 
   if (hasScheme(trimmed) && !trimmed.startsWith('http:') && !trimmed.startsWith('https:')) {
