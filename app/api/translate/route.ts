@@ -26,6 +26,91 @@ type ReaderDocument = {
   contentHtml: string;
 };
 
+const PLACEHOLDER_DATA_URI_PREFIXES = [
+  'data:,',
+  'data:image/gif;base64,r0lgodlh',
+  'data:image/svg+xml;base64,phn2zyb4bww+'
+];
+
+const ALLOWED_READER_TAGS = new Set([
+  'a',
+  'abbr',
+  'article',
+  'aside',
+  'b',
+  'blockquote',
+  'br',
+  'caption',
+  'cite',
+  'code',
+  'dd',
+  'del',
+  'details',
+  'dfn',
+  'div',
+  'dl',
+  'dt',
+  'em',
+  'figcaption',
+  'figure',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'i',
+  'img',
+  'li',
+  'main',
+  'mark',
+  'ol',
+  'p',
+  'picture',
+  'pre',
+  'q',
+  's',
+  'section',
+  'small',
+  'source',
+  'span',
+  'strong',
+  'sub',
+  'summary',
+  'sup',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'time',
+  'tr',
+  'u',
+  'ul'
+]);
+
+const ALLOWED_READER_ATTRS = new Set([
+  'alt',
+  'cite',
+  'colspan',
+  'datetime',
+  'decoding',
+  'height',
+  'href',
+  'loading',
+  'rowspan',
+  'sizes',
+  'src',
+  'srcset',
+  'scope',
+  'target',
+  'title',
+  'width',
+  'rel'
+]);
+
 function isPrivateHost(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
   if (PRIVATE_HOSTS.has(normalized)) {
@@ -256,11 +341,23 @@ function sanitizeReaderHtml(contentHtml: string): string {
   $('script,style,iframe,object,embed,form,button,input,textarea,select,link,meta,base').remove();
 
   $('*').each((_, node) => {
+    const tagName = ((node as { name?: string }).name ?? '').toLowerCase();
+    if (tagName && !ALLOWED_READER_TAGS.has(tagName)) {
+      $(node).replaceWith($(node).contents());
+    }
+  });
+
+  $('*').each((_, node) => {
     const attrs = Object.keys((node as { attribs?: Record<string, string> }).attribs ?? {});
     attrs.forEach((attr) => {
       const value = ($(node).attr(attr) ?? '').trim();
       const normalizedAttr = attr.toLowerCase();
       if (normalizedAttr.startsWith('on')) {
+        $(node).removeAttr(attr);
+        return;
+      }
+
+      if (!ALLOWED_READER_ATTRS.has(normalizedAttr)) {
         $(node).removeAttr(attr);
         return;
       }
@@ -275,6 +372,36 @@ function sanitizeReaderHtml(contentHtml: string): string {
   });
 
   return $('article').html() ?? '';
+}
+
+function isPlaceholderMediaValue(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized === '#' || normalized === 'about:blank') {
+    return true;
+  }
+
+  if (normalized.startsWith('javascript:')) {
+    return true;
+  }
+
+  return PLACEHOLDER_DATA_URI_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function promoteLazyMediaAttrs($: ReturnType<typeof load>): void {
+  $('img, source').each((_, node) => {
+    const currentSrc = ($(node).attr('src') ?? '').trim();
+    const currentSrcset = ($(node).attr('srcset') ?? '').trim();
+    const dataSrc = ($(node).attr('data-src') ?? '').trim();
+    const dataSrcset = ($(node).attr('data-srcset') ?? '').trim();
+
+    if (dataSrc && isPlaceholderMediaValue(currentSrc)) {
+      $(node).attr('src', dataSrc);
+    }
+
+    if (dataSrcset && isPlaceholderMediaValue(currentSrcset)) {
+      $(node).attr('srcset', dataSrcset);
+    }
+  });
 }
 
 function extractReaderDocument(sourceHtml: string, originUrl: URL): ReaderDocument {
@@ -336,7 +463,7 @@ function extractReaderDocument(sourceHtml: string, originUrl: URL): ReaderDocume
 
   return {
     title: fallbackTitle,
-    contentHtml: sanitizeReaderHtml(bestHtml)
+    contentHtml: bestHtml
   };
 }
 
@@ -387,6 +514,8 @@ export async function GET(request: Request) {
 
   const readerDocument = extractReaderDocument(sourceHtml, parsedUrl);
   const $ = load(`<article>${readerDocument.contentHtml}</article>`);
+
+  promoteLazyMediaAttrs($);
 
   rewriteAssetUrl($, 'img[src]', 'src', parsedUrl);
   rewriteAssetUrl($, 'source[src]', 'src', parsedUrl);

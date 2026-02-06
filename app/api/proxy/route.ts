@@ -8,7 +8,7 @@ const PRIVATE_IPV4_RANGES = [
 ];
 const PRIVATE_HOSTS = new Set(['localhost', '::1', '[::1]']);
 const PRIVATE_IPV6_PATTERNS = [/^fc/i, /^fd/i, /^fe[89ab]/i];
-const ALLOWED_HOST_PATTERNS = [/\.wikipedia\.org$/i, /\.wikimedia\.org$/i, /\.bbc\.com$/i];
+const ALLOWED_HOST_PATTERNS = [/\.wikipedia\.org$/i, /\.wikimedia\.org$/i, /\.bbc\.com$/i, /\.bbc\.co\.uk$/i, /\.bbci\.co\.uk$/i];
 const ALLOWED_HOSTS = new Set(['example.com']);
 
 function isBlockedHost(hostname: string): boolean {
@@ -101,7 +101,9 @@ export async function GET(request: Request): Promise<Response> {
       redirect: 'follow',
       headers: {
         'User-Agent': 'traductor-web-proxy/1.0 (+https://localhost)',
-        Accept: 'text/css,text/html,application/javascript,image/*,*/*;q=0.8'
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/*,*/*;q=0.8',
+        Referer: `${parsed.protocol}//${parsed.hostname}/`,
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
       }
     });
   } catch {
