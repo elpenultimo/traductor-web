@@ -2,7 +2,6 @@ import { load } from 'cheerio';
 import type { AnyNode } from 'domhandler';
 import { rewriteSrcset, toAbsoluteUrl, toNavUrl, toProxyUrl } from '../../../lib/url';
 
-const ALLOWED_LANGS = new Set(['es', 'pt', 'fr']);
 const PRIVATE_IPV4_RANGES = [
   /^127\./,
   /^10\./,
@@ -27,12 +26,11 @@ function isPrivateHost(hostname: string): boolean {
   return false;
 }
 
-function translateText(text: string, lang: string): string {
-  const prefix = lang === 'es' ? '[ES] ' : lang === 'pt' ? '[PT] ' : '[FR] ';
-  return `${prefix}${text}`;
+function translateText(text: string): string {
+  return `[ES] ${text}`;
 }
 
-function rewriteNavigationLink(href: string, originUrl: URL, lang: string): string {
+function rewriteNavigationLink(href: string, originUrl: URL): string {
   const trimmed = href.trim();
   const normalized = trimmed.toLowerCase();
   if (
@@ -50,7 +48,7 @@ function rewriteNavigationLink(href: string, originUrl: URL, lang: string): stri
     return href;
   }
 
-  return toNavUrl(lang, absolute);
+  return toNavUrl(absolute);
 }
 
 function ensureBaseTag($: ReturnType<typeof load>, appUrl: URL): void {
@@ -73,7 +71,7 @@ function ensureBaseTag($: ReturnType<typeof load>, appUrl: URL): void {
   }
 }
 
-function translateBodyTextNodes($: ReturnType<typeof load>, lang: string): void {
+function translateBodyTextNodes($: ReturnType<typeof load>): void {
   const blockedTags = new Set(['script', 'style', 'noscript']);
 
   const walk = (node: AnyNode, blocked: boolean): void => {
@@ -83,7 +81,7 @@ function translateBodyTextNodes($: ReturnType<typeof load>, lang: string): void 
     if (node.type === 'text' && !nextBlocked) {
       const content = node.data;
       if (content.trim().length > 0) {
-        node.data = translateText(content, lang);
+        node.data = translateText(content);
       }
     }
 
@@ -171,9 +169,7 @@ function rewriteAssetUrl(
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const rawUrl = searchParams.get('url');
-  const lang = searchParams.get('lang') ?? 'es';
-
-  if (!rawUrl || !ALLOWED_LANGS.has(lang)) {
+  if (!rawUrl) {
     return new Response('Parámetros inválidos.', { status: 400 });
   }
 
@@ -243,10 +239,10 @@ export async function GET(request: Request) {
     if (!href) {
       return;
     }
-    $(node).attr('href', rewriteNavigationLink(href, parsedUrl, lang));
+    $(node).attr('href', rewriteNavigationLink(href, parsedUrl));
   });
 
-  translateBodyTextNodes($, lang);
+  translateBodyTextNodes($);
 
   return new Response($.html(), {
     status: 200,

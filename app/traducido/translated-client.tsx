@@ -1,31 +1,17 @@
 'use client';
 
 import Link from 'next/link';
-import { notFound, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
-const ALLOWED_LANGS = new Set(['es', 'pt', 'fr']);
-
-type LangPageProps = {
-  params: { lang: string };
+type TranslatedClientProps = {
+  rawUrl: string;
 };
 
-export default function LangPage({ params }: LangPageProps) {
-  const { lang } = params;
-  const searchParams = useSearchParams();
-  const rawUrl = searchParams.get('url');
-
+export default function TranslatedClient({ rawUrl }: TranslatedClientProps) {
   const [html, setHtml] = useState('');
   const [error, setError] = useState('');
 
-  if (!ALLOWED_LANGS.has(lang) || !rawUrl) {
-    notFound();
-  }
-
-  const apiUrl = useMemo(
-    () => `/api/translate?lang=${encodeURIComponent(lang)}&url=${encodeURIComponent(rawUrl)}`,
-    [lang, rawUrl]
-  );
+  const apiUrl = useMemo(() => `/api/translate?url=${encodeURIComponent(rawUrl)}`, [rawUrl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,7 +44,7 @@ export default function LangPage({ params }: LangPageProps) {
 
   return (
     <main>
-      <h1>Vista traducida ({lang.toUpperCase()})</h1>
+      <h1>Vista traducida (ES)</h1>
       <p>
         <Link href="/">← Volver</Link>
       </p>

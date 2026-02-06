@@ -3,19 +3,12 @@
 import { FormEvent, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-const LANGS = [
-  { value: 'es', label: 'Español' },
-  { value: 'pt', label: 'Português' },
-  { value: 'fr', label: 'Français' }
-] as const;
-
 export default function HomePage() {
   const router = useRouter();
   const [url, setUrl] = useState('https://example.com');
-  const [lang, setLang] = useState<(typeof LANGS)[number]['value']>('es');
   const [copyState, setCopyState] = useState('');
 
-  const translatedPath = useMemo(() => `/${lang}?url=${encodeURIComponent(url)}`, [lang, url]);
+  const translatedPath = useMemo(() => `/traducido?url=${encodeURIComponent(url)}`, [url]);
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -35,7 +28,7 @@ export default function HomePage() {
   return (
     <main>
       <h1>Traductor Web</h1>
-      <p>Pega una URL para traducir su contenido visible.</p>
+      <p>Pega una URL y tradúcela al español.</p>
 
       <form className="card" onSubmit={onSubmit}>
         <div className="row">
@@ -47,13 +40,6 @@ export default function HomePage() {
             placeholder="https://sitio.com"
             aria-label="URL a traducir"
           />
-          <select value={lang} onChange={(event) => setLang(event.target.value as 'es' | 'pt' | 'fr')}>
-            {LANGS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
           <button type="submit">Traducir</button>
           <button type="button" className="secondary" onClick={onCopy}>
             Copiar enlace traducido
