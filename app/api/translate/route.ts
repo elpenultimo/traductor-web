@@ -12,6 +12,14 @@ const PRIVATE_IPV4_RANGES = [
 ];
 const PRIVATE_HOSTS = new Set(['localhost', '::1', '[::1]']);
 const MAX_BYTES = 2 * 1024 * 1024;
+const TRANSLATION_BATCH_SIZE = 30;
+
+type TextNode = AnyNode & { data: string };
+
+type DeepLTranslationResponse = {
+  translations?: Array<{ text?: string }>;
+  message?: string;
+};
 
 function isPrivateHost(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
@@ -26,8 +34,109 @@ function isPrivateHost(hostname: string): boolean {
   return false;
 }
 
-function translateText(text: string): string {
-  return `[ES] ${text}`;
+function isLikelyUrlText(text: string): boolean {
+  return /^(https?:\/\/|www\.|mailto:|tel:|ftp:\/\/)/i.test(text);
+}
+
+function splitOuterWhitespace(value: string): { leading: string; core: string; trailing: string } {
+  const leading = value.match(/^\s*/)?.[0] ?? '';
+  const trailing = value.match(/\s*$/)?.[0] ?? '';
+  return {
+    leading,
+    core: value.slice(leading.length, value.length - trailing.length),
+    trailing
+  };
+}
+
+async function translateText(text: string): Promise<string> {
+  const authKey = process.env.DEEPL_AUTH_KEY;
+  if (!authKey) {
+    throw new Error('DEEPL_AUTH_KEY no está configurada en el entorno.');
+  }
+
+  const endpoint = authKey.includes(':fx') ? 'https://api-free.deepl.com/v2/translate' : 'https://api.deepl.com/v2/translate';
+  const body = new URLSearchParams({
+    text,
+    target_lang: 'ES'
+  });
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `DeepL-Auth-Key ${authKey}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: body.toString()
+  });
+
+  if (!response.ok) {
+    let detail = `DeepL devolvió ${response.status}`;
+    try {
+      const payload = (await response.json()) as DeepLTranslationResponse;
+      if (payload?.message) {
+        detail = `${detail}: ${payload.message}`;
+      }
+    } catch {
+      // noop: mantener detalle básico si no llega JSON.
+    }
+    throw new Error(detail);
+  }
+
+  const payload = (await response.json()) as DeepLTranslationResponse;
+  const translatedText = payload.translations?.[0]?.text;
+
+  if (!translatedText) {
+    throw new Error('DeepL devolvió una respuesta sin texto traducido.');
+  }
+
+  return translatedText;
+}
+
+async function translateBatch(texts: string[]): Promise<string[]> {
+  if (texts.length === 1) {
+    return [await translateText(texts[0])];
+  }
+
+  const authKey = process.env.DEEPL_AUTH_KEY;
+  if (!authKey) {
+    throw new Error('DEEPL_AUTH_KEY no está configurada en el entorno.');
+  }
+
+  const endpoint = authKey.includes(':fx') ? 'https://api-free.deepl.com/v2/translate' : 'https://api.deepl.com/v2/translate';
+  const body = new URLSearchParams({
+    target_lang: 'ES'
+  });
+  texts.forEach((text) => body.append('text', text));
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `DeepL-Auth-Key ${authKey}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: body.toString()
+  });
+
+  if (!response.ok) {
+    let detail = `DeepL devolvió ${response.status}`;
+    try {
+      const payload = (await response.json()) as DeepLTranslationResponse;
+      if (payload?.message) {
+        detail = `${detail}: ${payload.message}`;
+      }
+    } catch {
+      // noop
+    }
+    throw new Error(detail);
+  }
+
+  const payload = (await response.json()) as DeepLTranslationResponse;
+  const translated = payload.translations?.map((entry) => entry.text ?? '');
+  if (!translated || translated.length !== texts.length) {
+    throw new Error('DeepL devolvió una cantidad inesperada de traducciones.');
+  }
+
+  return translated;
 }
 
 function rewriteNavigationLink(href: string, originUrl: URL): string {
@@ -71,8 +180,9 @@ function ensureBaseTag($: ReturnType<typeof load>, appUrl: URL): void {
   }
 }
 
-function translateBodyTextNodes($: ReturnType<typeof load>): void {
-  const blockedTags = new Set(['script', 'style', 'noscript']);
+async function translateBodyTextNodes($: ReturnType<typeof load>): Promise<void> {
+  const blockedTags = new Set(['script', 'style', 'noscript', 'code', 'pre', 'kbd', 'samp']);
+  const candidates: Array<{ node: TextNode; leading: string; trailing: string; text: string }> = [];
 
   const walk = (node: AnyNode, blocked: boolean): void => {
     const isTag = node.type === 'tag';
@@ -81,7 +191,10 @@ function translateBodyTextNodes($: ReturnType<typeof load>): void {
     if (node.type === 'text' && !nextBlocked) {
       const content = node.data;
       if (content.trim().length > 0) {
-        node.data = translateText(content);
+        const { leading, core, trailing } = splitOuterWhitespace(content);
+        if (core && !isLikelyUrlText(core)) {
+          candidates.push({ node: node as TextNode, leading, trailing, text: core });
+        }
       }
     }
 
@@ -94,6 +207,19 @@ function translateBodyTextNodes($: ReturnType<typeof load>): void {
   };
 
   $('body').each((_, body) => walk(body, false));
+
+  for (let i = 0; i < candidates.length; i += TRANSLATION_BATCH_SIZE) {
+    const batch = candidates.slice(i, i + TRANSLATION_BATCH_SIZE);
+    const translatedBatch = await translateBatch(batch.map((entry) => entry.text));
+
+    batch.forEach((entry, index) => {
+      const translated = translatedBatch[index]?.trim();
+      if (!translated) {
+        return;
+      }
+      entry.node.data = `${entry.leading}${translated}${entry.trailing}`;
+    });
+  }
 }
 
 async function fetchHtmlWithLimits(url: URL): Promise<string> {
@@ -242,7 +368,13 @@ export async function GET(request: Request) {
     $(node).attr('href', rewriteNavigationLink(href, parsedUrl));
   });
 
-  translateBodyTextNodes($);
+  try {
+    await translateBodyTextNodes($);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Error traduciendo con DeepL.';
+    const status = message.includes('DEEPL_AUTH_KEY') ? 500 : 502;
+    return new Response(message, { status });
+  }
 
   return new Response($.html(), {
     status: 200,
