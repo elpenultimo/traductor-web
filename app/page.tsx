@@ -15,7 +15,7 @@ export default function HomePage() {
   const [lang, setLang] = useState<(typeof LANGS)[number]['value']>('es');
   const [copyState, setCopyState] = useState('');
 
-  const translatedPath = useMemo(() => `/${lang}?url=${encodeURIComponent(url)}`, [lang, url]);
+  const translatedPath = useMemo(() => `/es?url=${encodeURIComponent(url)}`, [url]);
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

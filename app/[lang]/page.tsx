@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { notFound, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
-const ALLOWED_LANGS = new Set(['es', 'pt', 'fr']);
+const ALLOWED_LANGS = new Set(['es']);
 
 type LangPageProps = {
   params: { lang: string };
