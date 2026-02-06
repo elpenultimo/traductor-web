@@ -1,6 +1,7 @@
 import { load } from 'cheerio';
 import type { AnyNode } from 'domhandler';
 import { extractRelevantLinks } from '../../../lib/extractLinks';
+import { extractPdfTextFromUrl, isPdfResource } from '../../../lib/pdf';
 import { rewriteSrcset, toAbsoluteUrl, toNavUrl, toProxyUrl } from '../../../lib/url';
 
 const PRIVATE_IPV4_RANGES = [
@@ -38,6 +39,16 @@ type LinksResponsePayload = {
   mode: 'links';
   sourceUrl: string;
   links: Array<{ title: string; url: string }>;
+};
+
+
+type PdfReaderResponsePayload = {
+  mode: 'pdf';
+  title: string;
+  sourceUrl: string;
+  contentText: string;
+  truncated: boolean;
+  bytes: number;
 };
 
 const PLACEHOLDER_DATA_URI_PREFIXES = [
@@ -241,6 +252,25 @@ async function translateBatch(texts: string[]): Promise<string[]> {
   }
 
   return translated;
+}
+
+
+async function translateLongText(text: string): Promise<string> {
+  const compact = text.trim();
+  if (!compact) {
+    return '';
+  }
+
+  const chunks = compact.match(/[\s\S]{1,3000}/g) ?? [];
+  const translatedChunks: string[] = [];
+
+  for (let i = 0; i < chunks.length; i += TRANSLATION_BATCH_SIZE) {
+    const batch = chunks.slice(i, i + TRANSLATION_BATCH_SIZE);
+    const translatedBatch = await translateBatch(batch);
+    translatedChunks.push(...translatedBatch);
+  }
+
+  return translatedChunks.join('');
 }
 
 function rewriteNavigationLink(href: string, originUrl: URL): string {
@@ -570,6 +600,39 @@ export async function GET(request: Request) {
 
   if (isPrivateHost(parsedUrl.hostname)) {
     return new Response('Host bloqueado por seguridad.', { status: 403 });
+  }
+
+  const isPdfTarget = await isPdfResource(parsedUrl);
+
+  if (isPdfTarget) {
+    let extraction;
+    try {
+      extraction = await extractPdfTextFromUrl(parsedUrl);
+    } catch (error) {
+      return new Response(error instanceof Error ? error.message : 'Error al descargar PDF.', { status: 502 });
+    }
+
+    let translatedText = extraction.text;
+    if (translatedText) {
+      try {
+        translatedText = await translateLongText(translatedText);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Error traduciendo con DeepL.';
+        const status = message.includes('DEEPL_AUTH_KEY') ? 500 : 502;
+        return new Response(message, { status });
+      }
+    }
+
+    const pdfPayload: PdfReaderResponsePayload = {
+      mode: 'pdf',
+      title: parsedUrl.pathname.split('/').filter(Boolean).pop() || parsedUrl.hostname,
+      sourceUrl: parsedUrl.toString(),
+      contentText: translatedText,
+      truncated: extraction.truncated,
+      bytes: extraction.bytes
+    };
+
+    return Response.json(pdfPayload);
   }
 
   let sourceHtml: string;

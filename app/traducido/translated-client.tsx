@@ -14,13 +14,22 @@ type ReaderTranslation = {
   contentHtml: string;
 };
 
+type PdfTranslation = {
+  mode: 'pdf';
+  title: string;
+  sourceUrl: string;
+  contentText: string;
+  truncated: boolean;
+  bytes: number;
+};
+
 type LinksFallback = {
   mode: 'links';
   sourceUrl: string;
   links: Array<{ title: string; url: string }>;
 };
 
-type TranslationResult = ReaderTranslation | LinksFallback;
+type TranslationResult = ReaderTranslation | PdfTranslation | LinksFallback;
 
 export default function TranslatedClient({ rawUrl }: TranslatedClientProps) {
   const [result, setResult] = useState<TranslationResult | null>(null);
@@ -82,6 +91,31 @@ export default function TranslatedClient({ rawUrl }: TranslatedClientProps) {
             </p>
           </header>
           <section className="reader-content" dangerouslySetInnerHTML={{ __html: result.contentHtml }} />
+        </article>
+      ) : null}
+
+      {result?.mode === 'pdf' ? (
+        <article className="translated-page">
+          <header className="reader-header">
+            <h1>{result.title}</h1>
+            <p>
+              <a href={result.sourceUrl} target="_blank" rel="noreferrer noopener">
+                Abrir PDF original
+              </a>
+            </p>
+            <p>Tamaño descargado: {Math.round(result.bytes / 1024)} KB.</p>
+            {result.truncated ? <p>Se mostró una versión recortada del PDF (máximo 60.000 caracteres).</p> : null}
+          </header>
+
+          {result.contentText ? (
+            <section className="reader-content">
+              {result.contentText.split(/\n{2,}/).map((paragraph, index) => (
+                <p key={`${index}-${paragraph.slice(0, 20)}`}>{paragraph.trim()}</p>
+              ))}
+            </section>
+          ) : (
+            <p>Este PDF parece escaneado o no contiene texto seleccionable.</p>
+          )}
         </article>
       ) : null}
 

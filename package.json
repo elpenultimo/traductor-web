@@ -12,7 +12,8 @@
     "next": "14.2.5",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "cheerio": "1.0.0-rc.12"
+    "cheerio": "1.0.0-rc.12",
+    "pdf-parse": "^1.1.1"
   },
   "devDependencies": {
     "@types/node": "20.14.10",
