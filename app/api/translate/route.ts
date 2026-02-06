@@ -1,5 +1,6 @@
 import { load } from 'cheerio';
 import type { AnyNode } from 'domhandler';
+import { extractRelevantLinks } from '../../../lib/extractLinks';
 import { rewriteSrcset, toAbsoluteUrl, toNavUrl, toProxyUrl } from '../../../lib/url';
 
 const PRIVATE_IPV4_RANGES = [
@@ -24,6 +25,19 @@ type DeepLTranslationResponse = {
 type ReaderDocument = {
   title: string;
   contentHtml: string;
+};
+
+type ReaderResponsePayload = {
+  mode: 'reader';
+  title: string;
+  sourceUrl: string;
+  contentHtml: string;
+};
+
+type LinksResponsePayload = {
+  mode: 'links';
+  sourceUrl: string;
+  links: Array<{ title: string; url: string }>;
 };
 
 const PLACEHOLDER_DATA_URI_PREFIXES = [
@@ -450,21 +464,74 @@ function extractReaderDocument(sourceHtml: string, originUrl: URL): ReaderDocume
     }
   }
 
-  if (!bestHtml) {
-    const bodyText =
-      $('body')
-        .text()
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 15000) || 'No se pudo extraer contenido legible.';
-
-    bestHtml = `<p>${bodyText}</p>`;
-  }
-
   return {
     title: fallbackTitle,
     contentHtml: bestHtml
   };
+}
+
+function readableTextLength(contentHtml: string): number {
+  return load(`<article>${contentHtml}</article>`)('article').text().replace(/\s+/g, ' ').trim().length;
+}
+
+function pickPrimaryIframeSource(sourceHtml: string, baseUrl: URL): URL | null {
+  const $ = load(sourceHtml);
+  const candidates: Array<{ url: URL; score: number }> = [];
+
+  $('iframe[src]').each((_, node) => {
+    const rawSrc = ($(node).attr('src') ?? '').trim();
+    if (!rawSrc) {
+      return;
+    }
+
+    let iframeUrl: URL;
+    try {
+      iframeUrl = new URL(rawSrc, baseUrl);
+    } catch {
+      return;
+    }
+
+    if (!['http:', 'https:'].includes(iframeUrl.protocol)) {
+      return;
+    }
+
+    const width = Number.parseInt($(node).attr('width') ?? '', 10);
+    const height = Number.parseInt($(node).attr('height') ?? '', 10);
+    const hasDimensions = Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
+    const score = hasDimensions ? width * height : 1;
+    candidates.push({ url: iframeUrl, score });
+  });
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0].url;
+}
+
+async function resolveReaderDocument(sourceHtml: string, sourceUrl: URL): Promise<{ doc: ReaderDocument; origin: URL } | null> {
+  const primary = extractReaderDocument(sourceHtml, sourceUrl);
+  if (readableTextLength(primary.contentHtml) >= 200) {
+    return { doc: primary, origin: sourceUrl };
+  }
+
+  const iframeSource = pickPrimaryIframeSource(sourceHtml, sourceUrl);
+  if (!iframeSource) {
+    return null;
+  }
+
+  try {
+    const iframeHtml = await fetchHtmlWithLimits(iframeSource);
+    const iframeDoc = extractReaderDocument(iframeHtml, iframeSource);
+    if (readableTextLength(iframeDoc.contentHtml) >= 200) {
+      return { doc: iframeDoc, origin: iframeSource };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 function rewriteAssetUrl($: ReturnType<typeof load>, selector: string, attr: string, baseUrl: URL): void {
@@ -512,15 +579,26 @@ export async function GET(request: Request) {
     return new Response(error instanceof Error ? error.message : 'Error al descargar HTML.', { status: 502 });
   }
 
-  const readerDocument = extractReaderDocument(sourceHtml, parsedUrl);
+  const resolvedReader = await resolveReaderDocument(sourceHtml, parsedUrl);
+  if (!resolvedReader) {
+    const fallbackLinks: LinksResponsePayload = {
+      mode: 'links',
+      sourceUrl: parsedUrl.toString(),
+      links: extractRelevantLinks(sourceHtml, parsedUrl)
+    };
+
+    return Response.json(fallbackLinks);
+  }
+
+  const { doc: readerDocument, origin: readerOriginUrl } = resolvedReader;
   const $ = load(`<article>${readerDocument.contentHtml}</article>`);
 
   promoteLazyMediaAttrs($);
 
-  rewriteAssetUrl($, 'img[src]', 'src', parsedUrl);
-  rewriteAssetUrl($, 'source[src]', 'src', parsedUrl);
-  rewriteAssetUrl($, 'video[poster]', 'poster', parsedUrl);
-  rewriteAssetUrl($, 'audio[src]', 'src', parsedUrl);
+  rewriteAssetUrl($, 'img[src]', 'src', readerOriginUrl);
+  rewriteAssetUrl($, 'source[src]', 'src', readerOriginUrl);
+  rewriteAssetUrl($, 'video[poster]', 'poster', readerOriginUrl);
+  rewriteAssetUrl($, 'audio[src]', 'src', readerOriginUrl);
 
   $('img[srcset], source[srcset]').each((_, node) => {
     const value = $(node).attr('srcset');
@@ -528,7 +606,7 @@ export async function GET(request: Request) {
       return;
     }
 
-    $(node).attr('srcset', rewriteSrcset(parsedUrl, value));
+    $(node).attr('srcset', rewriteSrcset(readerOriginUrl, value));
   });
 
   $('a[href]').each((_, node) => {
@@ -537,7 +615,7 @@ export async function GET(request: Request) {
       return;
     }
 
-    $(node).attr('href', rewriteNavigationLink(href, parsedUrl));
+    $(node).attr('href', rewriteNavigationLink(href, readerOriginUrl));
   });
 
   try {
@@ -549,9 +627,10 @@ export async function GET(request: Request) {
     return new Response(message, { status });
   }
 
-  const payload = {
+  const payload: ReaderResponsePayload = {
+    mode: 'reader',
     title: readerDocument.title,
-    sourceUrl: parsedUrl.toString(),
+    sourceUrl: readerOriginUrl.toString(),
     contentHtml: sanitizeReaderHtml($('article').html() ?? '')
   };
 
