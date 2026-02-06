@@ -21,6 +21,11 @@ type DeepLTranslationResponse = {
   message?: string;
 };
 
+type ReaderDocument = {
+  title: string;
+  contentHtml: string;
+};
+
 function isPrivateHost(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
   if (PRIVATE_HOSTS.has(normalized)) {
@@ -160,27 +165,7 @@ function rewriteNavigationLink(href: string, originUrl: URL): string {
   return toNavUrl(absolute);
 }
 
-function ensureBaseTag($: ReturnType<typeof load>, appUrl: URL): void {
-  if ($('head').length === 0) {
-    if ($('html').length > 0) {
-      $('html').prepend('<head></head>');
-    } else {
-      $.root().prepend('<html><head></head><body></body></html>');
-    }
-  }
-
-  const baseHref = `${appUrl.origin}/`;
-  const head = $('head').first();
-  const base = head.find('base').first();
-
-  if (base.length > 0) {
-    base.attr('href', baseHref);
-  } else {
-    head.prepend(`<base href="${baseHref}">`);
-  }
-}
-
-async function translateBodyTextNodes($: ReturnType<typeof load>): Promise<void> {
+async function translateTextNodes($: ReturnType<typeof load>, selector: string): Promise<void> {
   const blockedTags = new Set(['script', 'style', 'noscript', 'code', 'pre', 'kbd', 'samp']);
   const candidates: Array<{ node: TextNode; leading: string; trailing: string; text: string }> = [];
 
@@ -206,7 +191,7 @@ async function translateBodyTextNodes($: ReturnType<typeof load>): Promise<void>
     children.forEach((child) => walk(child, nextBlocked));
   };
 
-  $('body').each((_, body) => walk(body, false));
+  $(selector).each((_, root) => walk(root, false));
 
   for (let i = 0; i < candidates.length; i += TRANSLATION_BATCH_SIZE) {
     const batch = candidates.slice(i, i + TRANSLATION_BATCH_SIZE);
@@ -266,18 +251,97 @@ async function fetchHtmlWithLimits(url: URL): Promise<string> {
   }
 }
 
-function rewriteAssetUrl(
-  $: ReturnType<typeof load>,
-  selector: string,
-  attr: string,
-  baseUrl: URL,
-  shouldRewrite?: (node: AnyNode) => boolean
-): void {
-  $(selector).each((_, node) => {
-    if (shouldRewrite && !shouldRewrite(node)) {
-      return;
-    }
+function sanitizeReaderHtml(contentHtml: string): string {
+  const $ = load(`<article>${contentHtml}</article>`);
+  $('script,style,iframe,object,embed,form,button,input,textarea,select,link,meta,base').remove();
 
+  $('*').each((_, node) => {
+    const attrs = Object.keys((node as { attribs?: Record<string, string> }).attribs ?? {});
+    attrs.forEach((attr) => {
+      const value = ($(node).attr(attr) ?? '').trim();
+      const normalizedAttr = attr.toLowerCase();
+      if (normalizedAttr.startsWith('on')) {
+        $(node).removeAttr(attr);
+        return;
+      }
+
+      if (
+        (normalizedAttr === 'href' || normalizedAttr === 'src' || normalizedAttr === 'xlink:href') &&
+        value.toLowerCase().startsWith('javascript:')
+      ) {
+        $(node).removeAttr(attr);
+      }
+    });
+  });
+
+  return $('article').html() ?? '';
+}
+
+function extractReaderDocument(sourceHtml: string, originUrl: URL): ReaderDocument {
+  const $ = load(sourceHtml);
+  const fallbackTitle = $('title').first().text().trim() || originUrl.hostname;
+
+  const candidateSelectors = [
+    'article',
+    'main article',
+    '[role="main"] article',
+    'main',
+    '[role="main"]',
+    '.post-content',
+    '.entry-content',
+    '.article-content',
+    '#content'
+  ];
+
+  let bestHtml = '';
+  let bestScore = 0;
+
+  candidateSelectors.forEach((selector) => {
+    $(selector).each((_, node) => {
+      const element = $(node);
+      const textLength = element.text().replace(/\s+/g, ' ').trim().length;
+      if (textLength > bestScore) {
+        bestScore = textLength;
+        bestHtml = element.html() ?? '';
+      }
+    });
+  });
+
+  if (!bestHtml) {
+    const body = $('body').clone();
+    body.find('nav,aside,footer,header,script,style,noscript,form').remove();
+
+    const paragraphs = body
+      .find('p')
+      .toArray()
+      .map((node) => $(node).text().replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .slice(0, 50);
+
+    if (paragraphs.length > 0) {
+      bestHtml = paragraphs.map((paragraph) => `<p>${paragraph}</p>`).join('');
+    }
+  }
+
+  if (!bestHtml) {
+    const bodyText =
+      $('body')
+        .text()
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 15000) || 'No se pudo extraer contenido legible.';
+
+    bestHtml = `<p>${bodyText}</p>`;
+  }
+
+  return {
+    title: fallbackTitle,
+    contentHtml: sanitizeReaderHtml(bestHtml)
+  };
+}
+
+function rewriteAssetUrl($: ReturnType<typeof load>, selector: string, attr: string, baseUrl: URL): void {
+  $(selector).each((_, node) => {
     const current = ($(node).attr(attr) ?? '').trim();
     if (!current) {
       return;
@@ -321,32 +385,10 @@ export async function GET(request: Request) {
     return new Response(error instanceof Error ? error.message : 'Error al descargar HTML.', { status: 502 });
   }
 
-  const $ = load(sourceHtml);
+  const readerDocument = extractReaderDocument(sourceHtml, parsedUrl);
+  const $ = load(`<article>${readerDocument.contentHtml}</article>`);
 
-  ensureBaseTag($, new URL(request.url));
-
-  $('img').each((_, node) => {
-    const src = ($(node).attr('src') ?? '').trim();
-    const dataSrc = ($(node).attr('data-src') ?? '').trim();
-    if (dataSrc && (!src || src === 'about:blank')) {
-      $(node).attr('src', dataSrc);
-      $(node).removeAttr('data-src');
-    }
-
-    const srcset = ($(node).attr('srcset') ?? '').trim();
-    const dataSrcset = ($(node).attr('data-srcset') ?? '').trim();
-    if (dataSrcset && !srcset) {
-      $(node).attr('srcset', dataSrcset);
-    }
-  });
-
-  // Route asset fetches through /api/proxy.
   rewriteAssetUrl($, 'img[src]', 'src', parsedUrl);
-  rewriteAssetUrl($, 'script[src]', 'src', parsedUrl);
-  rewriteAssetUrl($, 'link[href]', 'href', parsedUrl, (node) => {
-    const rel = ($(node).attr('rel') ?? '').toLowerCase();
-    return ['stylesheet', 'icon', 'preload'].some((value) => rel.includes(value));
-  });
   rewriteAssetUrl($, 'source[src]', 'src', parsedUrl);
   rewriteAssetUrl($, 'video[poster]', 'poster', parsedUrl);
   rewriteAssetUrl($, 'audio[src]', 'src', parsedUrl);
@@ -365,21 +407,24 @@ export async function GET(request: Request) {
     if (!href) {
       return;
     }
+
     $(node).attr('href', rewriteNavigationLink(href, parsedUrl));
   });
 
   try {
-    await translateBodyTextNodes($);
+    await translateTextNodes($, 'article');
+    readerDocument.title = await translateText(readerDocument.title);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Error traduciendo con DeepL.';
     const status = message.includes('DEEPL_AUTH_KEY') ? 500 : 502;
     return new Response(message, { status });
   }
 
-  return new Response($.html(), {
-    status: 200,
-    headers: {
-      'Content-Type': 'text/html; charset=utf-8'
-    }
-  });
+  const payload = {
+    title: readerDocument.title,
+    sourceUrl: parsedUrl.toString(),
+    contentHtml: sanitizeReaderHtml($('article').html() ?? '')
+  };
+
+  return Response.json(payload);
 }

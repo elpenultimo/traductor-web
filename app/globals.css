@@ -76,8 +76,30 @@ small {
   overflow: hidden;
 }
 
-.translated-page iframe {
-  width: 100%;
-  min-height: 80vh;
-  border: 0;
+.reader-header {
+  padding: 1.25rem 1.25rem 1rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.reader-header h1 {
+  margin: 0 0 0.5rem;
+  line-height: 1.25;
+}
+
+.reader-header p {
+  margin: 0;
+  color: #4b5563;
+  font-size: 0.95rem;
+}
+
+.reader-content {
+  padding: 1.25rem;
+  line-height: 1.7;
+}
+
+.reader-content img,
+.reader-content video,
+.reader-content iframe {
+  max-width: 100%;
+  height: auto;
 }
