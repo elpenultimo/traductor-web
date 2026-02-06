@@ -30,7 +30,7 @@ Luego abre `http://localhost:3000`.
 - Se aplica timeout de 8 segundos y tamaño máximo de 2MB para el HTML de origen.
 - Solo se traduce texto visible en etiquetas: `p`, `h1-h6`, `li`, `span`, `a`.
 - Scripts y estilos no se traducen.
-- La traducción usa un **stub** (`translateText`) que antepone `[ES]`, `[PT]` o `[FR]`.
+- La traducción usa un **stub** (`translateText`) que antepone `[ES]`.
 
 ## Aviso legal
 
