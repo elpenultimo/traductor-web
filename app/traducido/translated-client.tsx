@@ -7,8 +7,14 @@ type TranslatedClientProps = {
   rawUrl: string;
 };
 
+type ReaderTranslation = {
+  title: string;
+  sourceUrl: string;
+  contentHtml: string;
+};
+
 export default function TranslatedClient({ rawUrl }: TranslatedClientProps) {
-  const [html, setHtml] = useState('');
+  const [readerData, setReaderData] = useState<ReaderTranslation | null>(null);
   const [error, setError] = useState('');
 
   const apiUrl = useMemo(() => `/api/translate?url=${encodeURIComponent(rawUrl)}`, [rawUrl]);
@@ -18,7 +24,7 @@ export default function TranslatedClient({ rawUrl }: TranslatedClientProps) {
 
     const loadTranslatedHtml = async () => {
       setError('');
-      setHtml('');
+      setReaderData(null);
 
       const response = await fetch(apiUrl);
       const content = await response.text();
@@ -32,7 +38,11 @@ export default function TranslatedClient({ rawUrl }: TranslatedClientProps) {
         return;
       }
 
-      setHtml(content);
+      try {
+        setReaderData(JSON.parse(content) as ReaderTranslation);
+      } catch {
+        setError('La respuesta de traducción no tuvo un formato válido.');
+      }
     };
 
     void loadTranslatedHtml();
@@ -44,15 +54,27 @@ export default function TranslatedClient({ rawUrl }: TranslatedClientProps) {
 
   return (
     <main>
-      <h1>Vista traducida (ES)</h1>
       <p>
         <Link href="/">← Volver</Link>
       </p>
-      <small>Origen: {rawUrl}</small>
 
       {error ? <p>{error}</p> : null}
-      {!error && !html ? <p>Cargando traducción…</p> : null}
-      {html ? <article className="translated-page" dangerouslySetInnerHTML={{ __html: html }} /> : null}
+      {!error && !readerData ? <p>Cargando traducción…</p> : null}
+
+      {readerData ? (
+        <article className="translated-page">
+          <header className="reader-header">
+            <h1>{readerData.title}</h1>
+            <p>
+              Origen:{' '}
+              <a href={readerData.sourceUrl} target="_blank" rel="noreferrer noopener">
+                {readerData.sourceUrl}
+              </a>
+            </p>
+          </header>
+          <section className="reader-content" dangerouslySetInnerHTML={{ __html: readerData.contentHtml }} />
+        </article>
+      ) : null}
     </main>
   );
 }
