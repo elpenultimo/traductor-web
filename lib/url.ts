@@ -33,8 +33,8 @@ export function toProxyUrl(abs: string): string {
   return `/api/proxy?url=${encodeURIComponent(abs)}`;
 }
 
-export function toNavUrl(lang: string, abs: string): string {
-  return `/${lang}?url=${encodeURIComponent(abs)}`;
+export function toNavUrl(abs: string): string {
+  return `/es?url=${encodeURIComponent(abs)}`;
 }
 
 export function rewriteSrcset(base: URL | string, srcset: string): string {
